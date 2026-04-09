@@ -2,8 +2,8 @@ name: Build Tesseract (Windows)
 
 on:
   push:
-    paths:
-      - 'versions.txt'
+    tags:
+      - 'tesseract-*-vcpkg'
   workflow_dispatch:
     inputs:
       tesseract_version:
@@ -35,9 +35,12 @@ jobs:
           }
           $tess = if ("${{ inputs.tesseract_version }}") { "${{ inputs.tesseract_version }}" } else { $versions["tesseract"] }
           $vcpkgCommit = $versions["vcpkg_commit"]
+          # Use the git tag as release tag when triggered by tag push, otherwise compute it
+          $refName = "${{ github.ref_name }}"
+          $releaseTag = if ($refName -match '^tesseract-.*-vcpkg$') { $refName } else { "tesseract-${tess}-vcpkg" }
           echo "TESSERACT_VERSION=$tess" >> $env:GITHUB_OUTPUT
           echo "VCPKG_COMMIT=$vcpkgCommit" >> $env:GITHUB_OUTPUT
-          echo "RELEASE_TAG=tesseract-${tess}-vcpkg" >> $env:GITHUB_OUTPUT
+          echo "RELEASE_TAG=$releaseTag" >> $env:GITHUB_OUTPUT
 
       # -- Bootstrap vcpkg at pinned commit --
       - name: Clone and bootstrap vcpkg
@@ -132,10 +135,8 @@ jobs:
           $tag = "${{ steps.versions.outputs.RELEASE_TAG }}"
           $file = "$env:RUNNER_TEMP\tesseract-windows-x64-static-md.tar.zst"
 
-          # Delete existing release if re-running for same version
+          # Delete existing release if re-running for same tag
           gh release delete $tag --yes 2>$null
-          # Remove the tag too so we can recreate
-          git push origin :refs/tags/$tag 2>$null
 
           gh release create $tag $file `
             --title "Tesseract ${{ steps.versions.outputs.TESSERACT_VERSION }} (Windows x64, static-md)" `

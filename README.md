@@ -1,7 +1,5 @@
 # heretic-lazy-shot-deps
 
-Prebuilt native dependencies for [heretic-lazy-shot](https://github.com/nicedoc/heretic-lazy-shot), published as GitHub Release assets.
-
 ## Architecture
 
 This repo uses a GitHub Actions workflow to compile native C/C++ libraries via [vcpkg](https://github.com/microsoft/vcpkg) on Windows runners, then packages the result (headers + static libraries + metadata) into a compressed tarball (`tar.zst`) and publishes it as a GitHub Release asset.
@@ -59,7 +57,7 @@ vcpkg_commit=2024.11.16
 
 The build workflow (`.github/workflows/build-tesseract-windows.yml`) runs on:
 
-- **Push** to `versions.txt` on `main` -- automated trigger when bumping versions.
+- **Tag push** matching `tesseract-*-vcpkg` (e.g., `tesseract-5.5.0-vcpkg`) -- create a tag to trigger a build and release.
 - **`workflow_dispatch`** -- manual trigger with an optional version override.
 
 Expected frequency: once per quarter or less.
@@ -68,7 +66,7 @@ Expected frequency: once per quarter or less.
 
 Format: `tesseract-{version}-vcpkg` (e.g., `tesseract-5.5.0-vcpkg`).
 
-One release per Tesseract version. Re-running for the same version replaces the existing release (idempotent).
+Push a tag to trigger the build. The release is created from that tag automatically.
 
 ## Consuming in CI
 
@@ -129,9 +127,10 @@ winget install LLVM.LLVM
 ## Version Bump Procedure
 
 1. Edit `versions.txt` with the new Tesseract version and/or vcpkg commit.
-2. Push to `main` (or trigger `workflow_dispatch`).
-3. Wait ~20-30 min for the build.
-4. Update the release tag reference in the consumer repo's CI workflow.
+2. Commit and push to `main`.
+3. Create and push a tag: `git tag tesseract-5.5.0-vcpkg && git push origin tesseract-5.5.0-vcpkg`
+4. Wait ~20-30 min for the build.
+5. Update the release tag reference in the consumer repo's CI workflow.
 
 ## License
 

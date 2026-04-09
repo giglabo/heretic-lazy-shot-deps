@@ -124,6 +124,71 @@ winget install LLVM.LLVM
 [System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", "C:\Program Files\LLVM\bin", "User")
 ```
 
+## Commands
+
+### Trigger a new build and release
+
+```bash
+# 1. Update versions if needed
+vim versions.txt
+
+# 2. Commit and push
+git add versions.txt
+git commit -m "Bump tesseract to 5.5.0"
+git push origin main
+
+# 3. Create and push the tag (this triggers the workflow)
+git tag tesseract-5.5.0-vcpkg
+git push origin tesseract-5.5.0-vcpkg
+```
+
+### Trigger manually via workflow dispatch
+
+```bash
+gh workflow run build-tesseract-windows.yml --repo giglabo/heretic-lazy-shot-deps
+
+# With a version override
+gh workflow run build-tesseract-windows.yml --repo giglabo/heretic-lazy-shot-deps \
+  -f tesseract_version=5.5.0
+```
+
+### Check workflow status
+
+```bash
+gh run list --repo giglabo/heretic-lazy-shot-deps
+gh run view <run-id> --repo giglabo/heretic-lazy-shot-deps
+gh run watch <run-id> --repo giglabo/heretic-lazy-shot-deps
+```
+
+### List available releases
+
+```bash
+gh release list --repo giglabo/heretic-lazy-shot-deps
+```
+
+### Download a release asset
+
+```bash
+gh release download tesseract-5.5.0-vcpkg \
+  --repo giglabo/heretic-lazy-shot-deps \
+  -p 'tesseract-windows-x64-static-md.tar.zst' \
+  -D ./tesseract
+
+tar --zstd -xf ./tesseract/tesseract-windows-x64-static-md.tar.zst -C ./tesseract
+```
+
+### Delete a tag and re-trigger
+
+```bash
+# Delete remote tag
+git push origin :refs/tags/tesseract-5.5.0-vcpkg
+# Delete local tag
+git tag -d tesseract-5.5.0-vcpkg
+# Recreate and push
+git tag tesseract-5.5.0-vcpkg
+git push origin tesseract-5.5.0-vcpkg
+```
+
 ## Version Bump Procedure
 
 1. Edit `versions.txt` with the new Tesseract version and/or vcpkg commit.

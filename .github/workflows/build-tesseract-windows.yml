@@ -1,0 +1,155 @@
+name: Build Tesseract (Windows)
+
+on:
+  push:
+    paths:
+      - 'versions.txt'
+  workflow_dispatch:
+    inputs:
+      tesseract_version:
+        description: 'Tesseract version override (leave empty for versions.txt)'
+        required: false
+        type: string
+
+env:
+  VCPKG_DEFAULT_TRIPLET: x64-windows-static-md
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # -- Parse versions.txt --
+      - name: Read pinned versions
+        id: versions
+        shell: pwsh
+        run: |
+          $versions = @{}
+          Get-Content versions.txt | ForEach-Object {
+            if ($_ -match '^(\S+)\s*=\s*(.+)$') {
+              $versions[$Matches[1]] = $Matches[2].Trim()
+            }
+          }
+          $tess = if ("${{ inputs.tesseract_version }}") { "${{ inputs.tesseract_version }}" } else { $versions["tesseract"] }
+          $vcpkgCommit = $versions["vcpkg_commit"]
+          echo "TESSERACT_VERSION=$tess" >> $env:GITHUB_OUTPUT
+          echo "VCPKG_COMMIT=$vcpkgCommit" >> $env:GITHUB_OUTPUT
+          echo "RELEASE_TAG=tesseract-${tess}-vcpkg" >> $env:GITHUB_OUTPUT
+
+      # -- Bootstrap vcpkg at pinned commit --
+      - name: Clone and bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git $env:RUNNER_TEMP\vcpkg
+          cd $env:RUNNER_TEMP\vcpkg
+          git checkout ${{ steps.versions.outputs.VCPKG_COMMIT }}
+          .\bootstrap-vcpkg.bat -disableMetrics
+
+      # -- Install Tesseract via vcpkg --
+      - name: vcpkg install tesseract
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install tesseract:x64-windows-static-md
+        env:
+          VCPKG_MAX_CONCURRENCY: 4
+
+      # -- Verify the build produced what we expect --
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $installed = "$env:RUNNER_TEMP\vcpkg\installed\x64-windows-static-md"
+          if (-not (Test-Path "$installed\lib\tesseract*.lib")) {
+            throw "tesseract .lib not found"
+          }
+          if (-not (Test-Path "$installed\lib\leptonica*.lib")) {
+            throw "leptonica .lib not found"
+          }
+          if (-not (Test-Path "$installed\include\tesseract\baseapi.h")) {
+            throw "tesseract headers not found"
+          }
+          echo "Build verified OK"
+          Get-ChildItem -Recurse "$installed\lib\*.lib" | ForEach-Object { echo $_.FullName }
+
+      # -- Package into tarball --
+      - name: Create tarball
+        shell: pwsh
+        run: |
+          $installed = "$env:RUNNER_TEMP\vcpkg\installed\x64-windows-static-md"
+          $staging = "$env:RUNNER_TEMP\tesseract-package"
+          New-Item -ItemType Directory -Force $staging
+
+          # Copy headers
+          Copy-Item -Recurse "$installed\include" "$staging\include"
+
+          # Copy static libs
+          New-Item -ItemType Directory -Force "$staging\lib"
+          Copy-Item "$installed\lib\*.lib" "$staging\lib\"
+
+          # Copy DLLs (if any -- static-md may not produce them, but copy if present)
+          if (Test-Path "$installed\bin\*.dll") {
+            New-Item -ItemType Directory -Force "$staging\bin"
+            Copy-Item "$installed\bin\*.dll" "$staging\bin\"
+          }
+
+          # Copy debug libs
+          if (Test-Path "$installed\debug\lib\*.lib") {
+            New-Item -ItemType Directory -Force "$staging\debug\lib"
+            Copy-Item "$installed\debug\lib\*.lib" "$staging\debug\lib\"
+          }
+
+          # Copy vcpkg metadata (for reproducibility)
+          if (Test-Path "$installed\vcpkg\info") {
+            New-Item -ItemType Directory -Force "$staging\vcpkg-info"
+            Copy-Item "$installed\vcpkg\info\*" "$staging\vcpkg-info\"
+          }
+
+          # Write manifest
+          @"
+          tesseract_version=${{ steps.versions.outputs.TESSERACT_VERSION }}
+          vcpkg_commit=${{ steps.versions.outputs.VCPKG_COMMIT }}
+          vcpkg_triplet=x64-windows-static-md
+          built_on=$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+          runner_image=${{ runner.os }}-${{ runner.arch }}
+          "@ | Out-File -Encoding utf8 "$staging\MANIFEST.txt"
+
+          # Create tar.zst
+          cd $env:RUNNER_TEMP
+          tar --zstd -cf "tesseract-windows-x64-static-md.tar.zst" -C "$staging" .
+
+          # Report size
+          $size = (Get-Item "tesseract-windows-x64-static-md.tar.zst").Length / 1MB
+          echo "Tarball size: $([math]::Round($size, 1)) MB"
+
+      # -- Upload as GitHub Release asset --
+      - name: Create or update release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ steps.versions.outputs.RELEASE_TAG }}"
+          $file = "$env:RUNNER_TEMP\tesseract-windows-x64-static-md.tar.zst"
+
+          # Delete existing release if re-running for same version
+          gh release delete $tag --yes 2>$null
+          # Remove the tag too so we can recreate
+          git push origin :refs/tags/$tag 2>$null
+
+          gh release create $tag $file `
+            --title "Tesseract ${{ steps.versions.outputs.TESSERACT_VERSION }} (Windows x64, static-md)" `
+            --notes @"
+          Prebuilt Tesseract + Leptonica for Windows x64.
+
+          - **Triplet:** ``x64-windows-static-md`` (static Tesseract/Leptonica, dynamic MSVC CRT)
+          - **Tesseract version:** ${{ steps.versions.outputs.TESSERACT_VERSION }}
+          - **vcpkg commit:** ``${{ steps.versions.outputs.VCPKG_COMMIT }}``
+          - **Built:** $(Get-Date -Format 'yyyy-MM-dd')
+
+          ## Usage in CI
+          ``````yaml
+          - run: gh release download $tag -R owner/heretic-lazy-shot-deps -p '*windows*' -D `$env:RUNNER_TEMP\tesseract
+          - run: tar --zstd -xf `$env:RUNNER_TEMP\tesseract\*.tar.zst -C `$env:RUNNER_TEMP\tesseract
+          ``````
+          "@

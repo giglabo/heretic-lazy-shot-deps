@@ -1,0 +1,25 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.tar.zst
+*.tar.gz
+*.zip
+
+# vcpkg local builds
+vcpkg/
+vcpkg_installed/
+
+# Temp / downloaded specs
+phase-2-*.md
+
+# Claude
+.claude/

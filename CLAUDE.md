@@ -43,4 +43,4 @@ gh release list --repo giglabo/heretic-lazy-shot-deps
 - `versions.txt` is the source of truth for what gets built -- always update it before tagging
 - The workflow is expected to run ~once per quarter; keep it simple and reliable
 - Consumer repo (`heretic-lazy-shot`) references release tags in its CI workflow -- coordinate updates
-- This repo must remain **public** for free unlimited Releases storage and bandwidth
+- This repo is **public** so the consumer CI can download release assets with the default `GITHUB_TOKEN` (no extra PAT or secret needed)

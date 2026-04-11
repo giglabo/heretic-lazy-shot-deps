@@ -18,7 +18,7 @@ heretic-lazy-shot-deps                    Consumer CI
 └────────────────────────┘               └────────────────────────┘
 ```
 
-**Key design choice:** public GitHub repos get unlimited Releases storage and download bandwidth. By isolating the expensive native compilation into a separate public repo, the main repo's Actions cache quota is unaffected.
+**Purpose:** this repository exists solely to produce and host prebuilt static libraries for Tesseract OCR (and its transitive C/C++ dependencies) on Windows. Compiling Tesseract from source via vcpkg takes ~20 minutes per CI run; downloading the prebuilt tarball takes under 30 seconds. Consumer repositories link against these static `.lib` files directly instead of rebuilding the native toolchain on every job.
 
 ## What's Built
 

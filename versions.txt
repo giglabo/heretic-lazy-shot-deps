@@ -1,2 +1,2 @@
-tesseract=5.5.0
-vcpkg_commit=2024.11.16
+tesseract=5.5.3
+vcpkg_commit=2026.10.16

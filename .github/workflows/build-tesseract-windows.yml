@@ -1,5 +1,13 @@
 name: Build Tesseract (Windows)
 
+# One release per Tesseract version (tesseract-<version>-vcpkg), one asset per vcpkg triplet:
+#   tesseract-windows-x64-static.tar.zst     static libs, static MSVC CRT (/MT): links into a
+#                                            self-contained exe, no VC++ redistributable needed
+#   tesseract-windows-x64-static-md.tar.zst  static libs, dynamic MSVC CRT (/MD): the exe then
+#                                            imports MSVCP140.dll (VC++ redistributable)
+# A run uploads its assets into the release (creating it if missing) and replaces only assets of
+# the same name, so building one triplet never removes the other.
+
 on:
   push:
     tags:
@@ -10,17 +18,42 @@ on:
         description: 'Tesseract version override (leave empty for versions.txt)'
         required: false
         type: string
-
-env:
-  VCPKG_DEFAULT_TRIPLET: x64-windows-static-md
+      triplets:
+        description: 'vcpkg triplets to build, comma separated (x64-windows-static, x64-windows-static-md)'
+        required: false
+        type: string
+        default: 'x64-windows-static,x64-windows-static-md'
 
 permissions:
   contents: write
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      triplets: ${{ steps.plan.outputs.triplets }}
+    steps:
+      - id: plan
+        shell: bash
+        env:
+          TRIPLETS: ${{ inputs.triplets }}
+        run: |
+          t="${TRIPLETS:-x64-windows-static,x64-windows-static-md}"
+          json=$(jq -cn --arg t "$t" '$t | split(",") | map(gsub("\\s"; "")) | map(select(length > 0)) | unique')
+          bad=$(jq -r '.[] | select(. != "x64-windows-static" and . != "x64-windows-static-md")' <<<"$json")
+          if [ -n "$bad" ]; then echo "unsupported triplet(s): $bad" >&2; exit 1; fi
+          echo "triplets=$json" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
     runs-on: windows-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        triplet: ${{ fromJSON(needs.plan.outputs.triplets) }}
+    env:
+      TRIPLET: ${{ matrix.triplet }}
 
     steps:
       - uses: actions/checkout@v5
@@ -29,6 +62,9 @@ jobs:
       - name: Read pinned versions
         id: versions
         shell: pwsh
+        env:
+          VERSION_OVERRIDE: ${{ inputs.tesseract_version }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           $versions = @{}
           Get-Content versions.txt | ForEach-Object {
@@ -36,14 +72,16 @@ jobs:
               $versions[$Matches[1]] = $Matches[2].Trim()
             }
           }
-          $tess = if ("${{ inputs.tesseract_version }}") { "${{ inputs.tesseract_version }}" } else { $versions["tesseract"] }
+          $tess = if ($env:VERSION_OVERRIDE) { $env:VERSION_OVERRIDE } else { $versions["tesseract"] }
           $vcpkgCommit = $versions["vcpkg_commit"]
           # Use the git tag as release tag when triggered by tag push, otherwise compute it
-          $refName = "${{ github.ref_name }}"
-          $releaseTag = if ($refName -match '^tesseract-.*-vcpkg$') { $refName } else { "tesseract-${tess}-vcpkg" }
+          $releaseTag = if ($env:REF_NAME -match '^tesseract-.*-vcpkg$') { $env:REF_NAME } else { "tesseract-${tess}-vcpkg" }
+          # x64-windows-static-md -> tesseract-windows-x64-static-md.tar.zst
+          $asset = "tesseract-windows-$($env:TRIPLET -replace '-windows', '').tar.zst"
           echo "TESSERACT_VERSION=$tess" >> $env:GITHUB_OUTPUT
           echo "VCPKG_COMMIT=$vcpkgCommit" >> $env:GITHUB_OUTPUT
           echo "RELEASE_TAG=$releaseTag" >> $env:GITHUB_OUTPUT
+          echo "ASSET=$asset" >> $env:GITHUB_OUTPUT
 
       # -- Bootstrap vcpkg at pinned commit --
       - name: Clone and bootstrap vcpkg
@@ -58,7 +96,8 @@ jobs:
       - name: vcpkg install tesseract
         shell: pwsh
         run: |
-          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install tesseract:x64-windows-static-md
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install "tesseract:$env:TRIPLET"
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed ($LASTEXITCODE)" }
         env:
           VCPKG_MAX_CONCURRENCY: 4
 
@@ -66,7 +105,7 @@ jobs:
       - name: Verify build output
         shell: pwsh
         run: |
-          $installed = "$env:RUNNER_TEMP\vcpkg\installed\x64-windows-static-md"
+          $installed = "$env:RUNNER_TEMP\vcpkg\installed\$env:TRIPLET"
           if (-not (Test-Path "$installed\lib\tesseract*.lib")) {
             throw "tesseract .lib not found"
           }
@@ -76,14 +115,24 @@ jobs:
           if (-not (Test-Path "$installed\include\tesseract\baseapi.h")) {
             throw "tesseract headers not found"
           }
-          echo "Build verified OK"
+          # The CRT the C++ objects were compiled for: /MT -> RuntimeLibrary=MT_StaticRelease,
+          # /MD -> MD_DynamicRelease (a linker /FAILIFMISMATCH directive in every object).
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -Last 1
+          $want, $wrong = if ($env:TRIPLET -eq 'x64-windows-static') { 'MT_StaticRelease', 'MD_DynamicRelease' } else { 'MD_DynamicRelease', 'MT_StaticRelease' }
+          $lines = & $dumpbin.FullName /nologo /directives (Get-Item "$installed\lib\tesseract*.lib").FullName |
+            Select-String -Pattern 'RuntimeLibrary|DEFAULTLIB' | ForEach-Object { $_.Line.Trim() } | Sort-Object -Unique
+          $lines | ForEach-Object { echo "  $_" }
+          if ($lines -match $wrong) { throw "tesseract .lib has objects built for $wrong" }
+          if (-not ($lines -match $want)) { throw "tesseract .lib has no objects built for $want" }
+          echo "Build verified OK (RuntimeLibrary=$want)"
           Get-ChildItem -Recurse "$installed\lib\*.lib" | ForEach-Object { echo $_.FullName }
 
       # -- Package into tarball --
       - name: Create tarball
         shell: pwsh
         run: |
-          $installed = "$env:RUNNER_TEMP\vcpkg\installed\x64-windows-static-md"
+          $installed = "$env:RUNNER_TEMP\vcpkg\installed\$env:TRIPLET"
           $staging = "$env:RUNNER_TEMP\tesseract-package"
           New-Item -ItemType Directory -Force $staging
 
@@ -94,7 +143,7 @@ jobs:
           New-Item -ItemType Directory -Force "$staging\lib"
           Copy-Item "$installed\lib\*.lib" "$staging\lib\"
 
-          # Copy DLLs (if any -- static-md may not produce them, but copy if present)
+          # Copy DLLs (if any -- static triplets may not produce them, but copy if present)
           if (Test-Path "$installed\bin\*.dll") {
             New-Item -ItemType Directory -Force "$staging\bin"
             Copy-Item "$installed\bin\*.dll" "$staging\bin\"
@@ -116,44 +165,58 @@ jobs:
           @"
           tesseract_version=${{ steps.versions.outputs.TESSERACT_VERSION }}
           vcpkg_commit=${{ steps.versions.outputs.VCPKG_COMMIT }}
-          vcpkg_triplet=x64-windows-static-md
+          vcpkg_triplet=$env:TRIPLET
           built_on=$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
           runner_image=${{ runner.os }}-${{ runner.arch }}
           "@ | Out-File -Encoding utf8 "$staging\MANIFEST.txt"
 
           # Create tar.zst
           cd $env:RUNNER_TEMP
-          tar --zstd -cf "tesseract-windows-x64-static-md.tar.zst" -C "$staging" .
+          tar --zstd -cf "${{ steps.versions.outputs.ASSET }}" -C "$staging" .
 
           # Report size
-          $size = (Get-Item "tesseract-windows-x64-static-md.tar.zst").Length / 1MB
+          $size = (Get-Item "${{ steps.versions.outputs.ASSET }}").Length / 1MB
           echo "Tarball size: $([math]::Round($size, 1)) MB"
 
       # -- Upload as GitHub Release asset --
-      - name: Create or update release
+      - name: Upload to the release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = "${{ steps.versions.outputs.RELEASE_TAG }}"
-          $file = "$env:RUNNER_TEMP\tesseract-windows-x64-static-md.tar.zst"
+          $version = "${{ steps.versions.outputs.TESSERACT_VERSION }}"
+          $file = "$env:RUNNER_TEMP\${{ steps.versions.outputs.ASSET }}"
+          $notes = @"
+          Prebuilt Tesseract + Leptonica for Windows x64 (static libraries).
 
-          # Delete existing release if re-running for same tag
-          gh release delete $tag --yes 2>$null
+          | Asset | vcpkg triplet | MSVC runtime |
+          |---|---|---|
+          | ``tesseract-windows-x64-static.tar.zst`` | ``x64-windows-static`` | static (``/MT``): the exe is self-contained, no VC++ redistributable |
+          | ``tesseract-windows-x64-static-md.tar.zst`` | ``x64-windows-static-md`` | dynamic (``/MD``): the exe imports ``MSVCP140.dll`` |
 
-          gh release create $tag $file `
-            --title "Tesseract ${{ steps.versions.outputs.TESSERACT_VERSION }} (Windows x64, static-md)" `
-            --notes @"
-          Prebuilt Tesseract + Leptonica for Windows x64.
-
-          - **Triplet:** ``x64-windows-static-md`` (static Tesseract/Leptonica, dynamic MSVC CRT)
-          - **Tesseract version:** ${{ steps.versions.outputs.TESSERACT_VERSION }}
+          - **Tesseract version:** $version
           - **vcpkg commit:** ``${{ steps.versions.outputs.VCPKG_COMMIT }}``
-          - **Built:** $(Get-Date -Format 'yyyy-MM-dd')
+          - Each asset's ``MANIFEST.txt`` has its build date.
 
           ## Usage in CI
           ``````yaml
-          - run: gh release download $tag -R owner/heretic-lazy-shot-deps -p '*windows*' -D `$env:RUNNER_TEMP\tesseract
-          - run: tar --zstd -xf `$env:RUNNER_TEMP\tesseract\*.tar.zst -C `$env:RUNNER_TEMP\tesseract
+          - run: gh release download $tag -R giglabo/heretic-lazy-shot-deps -p 'tesseract-windows-x64-static.tar.zst' -D `$env:RUNNER_TEMP\tesseract
+          - run: tar --zstd -xf `$env:RUNNER_TEMP\tesseract\tesseract-windows-x64-static.tar.zst -C `$env:RUNNER_TEMP\tesseract
           ``````
           "@
+
+          # Create the release if it does not exist yet; the matrix jobs may race to create it.
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "Tesseract $version (Windows x64)" --notes $notes
+            if ($LASTEXITCODE -ne 0) {
+              Start-Sleep -Seconds 10
+              gh release view $tag *> $null
+              if ($LASTEXITCODE -ne 0) { throw "could not create release $tag" }
+            }
+          }
+          gh release upload $tag $file --clobber
+          if ($LASTEXITCODE -ne 0) { throw "upload failed" }
+          gh release edit $tag --title "Tesseract $version (Windows x64)" --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw "release edit failed" }

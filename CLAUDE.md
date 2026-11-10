@@ -16,16 +16,16 @@ LICENSE                                         # MIT (build scripts only)
 ## Key concepts
 
 - **Trigger:** workflow runs on tag push matching `tesseract-*-vcpkg` or via `workflow_dispatch`
-- **Triplet:** `x64-windows-static-md` -- static libs, dynamic MSVC CRT (`/MD`), matches Rust default ABI
-- **Output:** `tesseract-windows-x64-static-md.tar.zst` containing headers, static `.lib` files, debug libs, vcpkg metadata, and a MANIFEST.txt
+- **Triplets** (a matrix; `workflow_dispatch` input `triplets` picks a subset): `x64-windows-static` -- static libs, static MSVC CRT (`/MT`), for a self-contained exe built with `+crt-static` (what heretic-lazy-shot uses); `x64-windows-static-md` -- static libs, dynamic MSVC CRT (`/MD`), Rust's default ABI, the exe then needs `MSVCP140.dll`
+- **Output:** one asset per triplet in the same release, `tesseract-windows-x64-static.tar.zst` and `tesseract-windows-x64-static-md.tar.zst`, each with headers, static `.lib` files, debug libs, vcpkg metadata, and a MANIFEST.txt. A run uploads with `--clobber` (same-named asset only) and never deletes the release
 - **Versioning:** all versions pinned in `versions.txt` (tesseract version + vcpkg commit hash)
-- **Release tag format:** `tesseract-{version}-vcpkg` (e.g., `tesseract-5.5.0-vcpkg`)
+- **Release tag format:** `tesseract-{version}-vcpkg` (e.g., `tesseract-5.5.3-vcpkg`)
 
 ## Common commands
 
 ```bash
 # Trigger a build (push a tag)
-git tag tesseract-5.5.0-vcpkg && git push origin tesseract-5.5.0-vcpkg
+git tag tesseract-5.5.3-vcpkg && git push origin tesseract-5.5.3-vcpkg
 
 # Manual workflow dispatch
 gh workflow run build-tesseract-windows.yml --repo giglabo/heretic-lazy-shot-deps

@@ -24,16 +24,23 @@ heretic-lazy-shot-deps                    Consumer CI
 
 | Library | Version | License | Triplet |
 |---|---|---|---|
-| [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) | Pinned in `versions.txt` | Apache-2.0 | `x64-windows-static-md` |
-| [Leptonica](https://github.com/DanBloomberg/leptonica) | Transitive via vcpkg | BSD-2-Clause | `x64-windows-static-md` |
-| libpng, libjpeg-turbo, libtiff, zlib, libwebp, giflib, openjpeg | Transitive via vcpkg | Various OSS | `x64-windows-static-md` |
+| [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) | Pinned in `versions.txt` | Apache-2.0 | `x64-windows-static`, `x64-windows-static-md` |
+| [Leptonica](https://github.com/DanBloomberg/leptonica) | Transitive via vcpkg | BSD-2-Clause | same |
+| libpng, libspng, libjpeg-turbo, libtiff, zlib (`zs.lib`), libwebp, giflib, openjpeg, libarchive, libcurl, OpenSSL, liblzma, bzip2, lz4, zstd | Transitive via vcpkg | Various OSS | same |
 
-The `x64-windows-static-md` vcpkg triplet produces **static** libraries (`.lib` archives) linked against the **dynamic** MSVC runtime (`/MD`). This matches Rust's default Windows ABI.
+Both triplets produce **static** libraries (`.lib` archives). They differ in the MSVC runtime the objects are compiled for, and each is a separate asset of the same release:
+
+| Asset | Triplet | MSVC runtime | Consumer |
+|---|---|---|---|
+| `tesseract-windows-x64-static.tar.zst` | `x64-windows-static` | static (`/MT`) | Rust with `-C target-feature=+crt-static`: the exe imports only system DLLs and needs no VC++ redistributable. **Used by heretic-lazy-shot since 2026-11-10.** |
+| `tesseract-windows-x64-static-md.tar.zst` | `x64-windows-static-md` | dynamic (`/MD`) | Rust's default ABI; the exe imports `MSVCP140.dll`, so users need the VC++ redistributable. |
+
+Never mix them: the linker refuses `/MT` and `/MD` C++ objects in one binary (`LNK2038 RuntimeLibrary mismatch`).
 
 ### Tarball Contents
 
 ```
-tesseract-windows-x64-static-md.tar.zst
+tesseract-windows-x64-static.tar.zst   (or …-x64-static-md.tar.zst)
 ├── include/          # Public C/C++ headers (tesseract/, leptonica/)
 ├── lib/              # Release static libraries (.lib)
 ├── debug/lib/        # Debug static libraries (.lib)
@@ -46,25 +53,27 @@ tesseract-windows-x64-static-md.tar.zst
 All versions are locked in [`versions.txt`](versions.txt):
 
 ```
-tesseract=5.5.0
-vcpkg_commit=2024.11.16
+tesseract=5.5.3
+vcpkg_commit=2026.10.16
 ```
 
 - **`tesseract`** -- the vcpkg port version to install.
 - **`vcpkg_commit`** -- the exact vcpkg repository commit, ensuring identical port recipes and transitive dependency versions across builds.
 
+Old vcpkg commits stop building: they pin MSYS2 packages (pkgconf, the autotools libiconv needs) that MSYS2 later drops from its mirrors (404). `2024.11.16` (Tesseract 5.5.0) broke that way by 2026-11; bump to a recent vcpkg release tag rather than patching around it. `2026.10.16` gives Tesseract 5.5.3 / Leptonica 1.87.0, the versions heretic-lazy-shot's macOS build uses.
+
 ## Workflow Triggers
 
 The build workflow (`.github/workflows/build-tesseract-windows.yml`) runs on:
 
-- **Tag push** matching `tesseract-*-vcpkg` (e.g., `tesseract-5.5.0-vcpkg`) -- create a tag to trigger a build and release.
+- **Tag push** matching `tesseract-*-vcpkg` (e.g., `tesseract-5.5.3-vcpkg`) -- create a tag to trigger a build and release.
 - **`workflow_dispatch`** -- manual trigger with an optional version override.
 
 Expected frequency: once per quarter or less.
 
 ## Release Tags
 
-Format: `tesseract-{version}-vcpkg` (e.g., `tesseract-5.5.0-vcpkg`).
+Format: `tesseract-{version}-vcpkg` (e.g., `tesseract-5.5.3-vcpkg`).
 
 Push a tag to trigger the build. The release is created from that tag automatically.
 
@@ -74,12 +83,12 @@ Push a tag to trigger the build. The release is created from that tag automatica
 - name: Download prebuilt Tesseract
   shell: pwsh
   run: |
-    $tag = "tesseract-5.5.0-vcpkg"
+    $tag = "tesseract-5.5.3-vcpkg"
     $dest = "$env:RUNNER_TEMP\tesseract"
     New-Item -ItemType Directory -Force $dest
     gh release download $tag `
-      -R owner/heretic-lazy-shot-deps `
-      -p 'tesseract-windows-x64-static-md.tar.zst' `
+      -R giglabo/heretic-lazy-shot-deps `
+      -p 'tesseract-windows-x64-static.tar.zst' `
       -D $dest
     tar --zstd -xf "$dest\*.tar.zst" -C $dest
   env:
@@ -91,7 +100,7 @@ Push a tag to trigger the build. The release is created from that tag automatica
     $dest = "$env:RUNNER_TEMP\tesseract"
     echo "TESSERACT_INCLUDE_PATHS=$dest\include" >> $env:GITHUB_ENV
     echo "TESSERACT_LINK_PATHS=$dest\lib" >> $env:GITHUB_ENV
-    echo "TESSERACT_LINK_LIBS=tesseract55,leptonica-1.84.1,libpng16,jpeg,tiff,zlib,libwebp,libwebpmux,libsharpyuv,gif,openjp2" >> $env:GITHUB_ENV
+    echo "TESSERACT_LINK_LIBS=tesseract55,leptonica-1.87.0,libcurl,archive,libssl,libcrypto,lzma,bz2,lz4,zstd,libpng16,spng_static,jpeg,tiff,zs,libwebp,libwebpmux,libwebpdecoder,libwebpdemux,libsharpyuv,gif,openjp2,crypt32,ws2_32,wldap32,normaliz,advapi32,bcrypt,user32,secur32,iphlpapi,xmllite" >> $env:GITHUB_ENV
 ```
 
 > `GITHUB_TOKEN` has read access to public repos by default -- no additional PAT needed.
@@ -101,12 +110,12 @@ Push a tag to trigger the build. The release is created from that tag automatica
 Developers can skip vcpkg and use the prebuilt tarball directly:
 
 ```powershell
-gh release download tesseract-5.5.0-vcpkg -R owner/heretic-lazy-shot-deps -p '*windows*' -D C:\tesseract-prebuilt
+gh release download tesseract-5.5.3-vcpkg -R giglabo/heretic-lazy-shot-deps -p 'tesseract-windows-x64-static.tar.zst' -D C:\tesseract-prebuilt
 tar --zstd -xf C:\tesseract-prebuilt\*.tar.zst -C C:\tesseract-prebuilt
 
 [System.Environment]::SetEnvironmentVariable("TESSERACT_INCLUDE_PATHS", "C:\tesseract-prebuilt\include", "User")
 [System.Environment]::SetEnvironmentVariable("TESSERACT_LINK_PATHS", "C:\tesseract-prebuilt\lib", "User")
-[System.Environment]::SetEnvironmentVariable("TESSERACT_LINK_LIBS", "tesseract55,leptonica-1.84.1,libpng16,jpeg,tiff,zlib,libwebp,libwebpmux,libsharpyuv,gif,openjp2", "User")
+[System.Environment]::SetEnvironmentVariable("TESSERACT_LINK_LIBS", "tesseract55,leptonica-1.87.0,libcurl,archive,libssl,libcrypto,lzma,bz2,lz4,zstd,libpng16,spng_static,jpeg,tiff,zs,libwebp,libwebpmux,libwebpdecoder,libwebpdemux,libsharpyuv,gif,openjp2,crypt32,ws2_32,wldap32,normaliz,advapi32,bcrypt,user32,secur32,iphlpapi,xmllite", "User")
 ```
 
 Alternatively, build from source via vcpkg:
@@ -114,7 +123,7 @@ Alternatively, build from source via vcpkg:
 ```powershell
 git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
 C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
-C:\vcpkg\vcpkg.exe install tesseract:x64-windows-static-md
+C:\vcpkg\vcpkg.exe install tesseract:x64-windows-static      # or :x64-windows-static-md
 ```
 
 Both approaches also require [LLVM](https://github.com/llvm/llvm-project/releases) for `bindgen` (`libclang`):
@@ -134,12 +143,12 @@ vim versions.txt
 
 # 2. Commit and push
 git add versions.txt
-git commit -m "Bump tesseract to 5.5.0"
+git commit -m "Bump tesseract to 5.5.3"
 git push origin main
 
 # 3. Create and push the tag (this triggers the workflow)
-git tag tesseract-5.5.0-vcpkg
-git push origin tesseract-5.5.0-vcpkg
+git tag tesseract-5.5.3-vcpkg
+git push origin tesseract-5.5.3-vcpkg
 ```
 
 ### Trigger manually via workflow dispatch
@@ -149,8 +158,14 @@ gh workflow run build-tesseract-windows.yml --repo giglabo/heretic-lazy-shot-dep
 
 # With a version override
 gh workflow run build-tesseract-windows.yml --repo giglabo/heretic-lazy-shot-deps \
-  -f tesseract_version=5.5.0
+  -f tesseract_version=5.5.3
+
+# One triplet only (the default builds both); the other asset of the release stays as it is
+gh workflow run build-tesseract-windows.yml --repo giglabo/heretic-lazy-shot-deps \
+  -f triplets=x64-windows-static
 ```
+
+A run uploads its assets into the release (creating it if missing) and replaces only assets of the same name.
 
 ### Check workflow status
 
@@ -169,31 +184,31 @@ gh release list --repo giglabo/heretic-lazy-shot-deps
 ### Download a release asset
 
 ```bash
-gh release download tesseract-5.5.0-vcpkg \
+gh release download tesseract-5.5.3-vcpkg \
   --repo giglabo/heretic-lazy-shot-deps \
-  -p 'tesseract-windows-x64-static-md.tar.zst' \
+  -p 'tesseract-windows-x64-static.tar.zst' \
   -D ./tesseract
 
-tar --zstd -xf ./tesseract/tesseract-windows-x64-static-md.tar.zst -C ./tesseract
+tar --zstd -xf ./tesseract/tesseract-windows-x64-static.tar.zst -C ./tesseract
 ```
 
 ### Delete a tag and re-trigger
 
 ```bash
 # Delete remote tag
-git push origin :refs/tags/tesseract-5.5.0-vcpkg
+git push origin :refs/tags/tesseract-5.5.3-vcpkg
 # Delete local tag
-git tag -d tesseract-5.5.0-vcpkg
+git tag -d tesseract-5.5.3-vcpkg
 # Recreate and push
-git tag tesseract-5.5.0-vcpkg
-git push origin tesseract-5.5.0-vcpkg
+git tag tesseract-5.5.3-vcpkg
+git push origin tesseract-5.5.3-vcpkg
 ```
 
 ## Version Bump Procedure
 
 1. Edit `versions.txt` with the new Tesseract version and/or vcpkg commit.
 2. Commit and push to `main`.
-3. Create and push a tag: `git tag tesseract-5.5.0-vcpkg && git push origin tesseract-5.5.0-vcpkg`
+3. Create and push a tag: `git tag tesseract-5.5.3-vcpkg && git push origin tesseract-5.5.3-vcpkg`
 4. Wait ~20-30 min for the build.
 5. Update the release tag reference in the consumer repo's CI workflow.
 

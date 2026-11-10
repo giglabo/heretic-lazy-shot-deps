@@ -177,9 +177,12 @@ jobs:
           runner_image=${{ runner.os }}-${{ runner.arch }}
           "@ | Out-File -Encoding utf8 "$staging\MANIFEST.txt"
 
-          # Create tar.zst
+          # Create tar.zst. cmake, not tar: the bsdtar of windows-2022 has no zstd and hung on --zstd.
+          Push-Location $staging
+          cmake -E tar cf "$env:RUNNER_TEMP\${{ steps.versions.outputs.ASSET }}" --zstd (Get-ChildItem -Name)
+          if ($LASTEXITCODE -ne 0) { throw "cmake -E tar failed ($LASTEXITCODE)" }
+          Pop-Location
           cd $env:RUNNER_TEMP
-          tar --zstd -cf "${{ steps.versions.outputs.ASSET }}" -C "$staging" .
 
           # Report size
           $size = (Get-Item "${{ steps.versions.outputs.ASSET }}").Length / 1MB

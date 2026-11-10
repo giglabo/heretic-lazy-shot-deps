@@ -46,7 +46,11 @@ jobs:
 
   build:
     needs: plan
-    runs-on: windows-latest
+    # VS 2022 (MSVC 14.44), deliberately not windows-latest. Static libs link only with the same or a
+    # NEWER link.exe: windows-latest became windows-2025-vs2026 (MSVC 14.51), and its libs fail on
+    # VS 2022 with LNK1104 'volatileaccessu.lib' (seen 2026-11-10 on win10-2). Build with the oldest
+    # toolset a consumer uses; newer toolsets link these fine.
+    runs-on: windows-2022
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -162,10 +166,13 @@ jobs:
           }
 
           # Write manifest
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $msvc = (Get-ChildItem "$vs\VC\Tools\MSVC" | Sort-Object Name | Select-Object -Last 1).Name
           @"
           tesseract_version=${{ steps.versions.outputs.TESSERACT_VERSION }}
           vcpkg_commit=${{ steps.versions.outputs.VCPKG_COMMIT }}
           vcpkg_triplet=$env:TRIPLET
+          msvc=$msvc
           built_on=$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
           runner_image=${{ runner.os }}-${{ runner.arch }}
           "@ | Out-File -Encoding utf8 "$staging\MANIFEST.txt"
@@ -197,6 +204,7 @@ jobs:
 
           - **Tesseract version:** $version
           - **vcpkg commit:** ``${{ steps.versions.outputs.VCPKG_COMMIT }}``
+          - **Toolset:** VS 2022 (MSVC 14.44, runner ``windows-2022``). Link with the same or a newer MSVC.
           - Each asset's ``MANIFEST.txt`` has its build date.
 
           ## Usage in CI

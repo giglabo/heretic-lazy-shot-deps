@@ -96,6 +96,27 @@ jobs:
           git checkout ${{ steps.versions.outputs.VCPKG_COMMIT }}
           .\bootstrap-vcpkg.bat -disableMetrics
 
+      # -- Pin the Windows SDK --
+      # Newer SDK headers (10.0.26100) make libcurl ask for volatileaccessu.lib
+      # (#pragma comment(lib)), which SDK 10.0.22621 does not have: heretic-lazy-shot's
+      # build VM win10-2 (VS 2022 17.14, SDK 10.0.22621) failed with LNK1104 on it.
+      # vcvars takes the newest SDK it finds, so move the newer ones out of its way.
+      - name: Pin the Windows SDK to 10.0.22621
+        shell: pwsh
+        run: |
+          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10"
+          $pin = [version]'10.0.22621.0'
+          if (-not (Test-Path "$kits\Include\$pin\um\Windows.h")) { throw "Windows SDK $pin is not on this runner" }
+          $hide = "${env:ProgramFiles(x86)}\Windows Kits\hidden-sdks"   # same volume (Move-Item cannot move folders across drives), outside Kits\10
+          foreach ($sub in 'Include', 'Lib', 'bin') {
+            Get-ChildItem "$kits\$sub" -Directory | Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' -and [version]$_.Name -gt $pin } | ForEach-Object {
+              New-Item -ItemType Directory -Force "$hide\$sub" | Out-Null
+              Move-Item $_.FullName "$hide\$sub\$($_.Name)"
+              echo "moved aside: $sub\$($_.Name)"
+            }
+          }
+          echo "SDKs left: $((Get-ChildItem "$kits\Include" -Directory).Name -join ' ')"
+
       # -- Install Tesseract via vcpkg --
       - name: vcpkg install tesseract
         shell: pwsh
@@ -130,6 +151,12 @@ jobs:
           if ($lines -match $wrong) { throw "tesseract .lib has objects built for $wrong" }
           if (-not ($lines -match $want)) { throw "tesseract .lib has no objects built for $want" }
           echo "Build verified OK (RuntimeLibrary=$want)"
+          # Libraries a consumer's linker must find. volatileaccessu.lib exists only in SDK >= 10.0.26100.
+          $defaultlibs = Get-ChildItem "$installed\lib\*.lib" | ForEach-Object {
+            & $dumpbin.FullName /nologo /directives $_.FullName | Select-String -Pattern '/DEFAULTLIB:' | ForEach-Object { ($_.Line.Trim() -replace '^/DEFAULTLIB:', '' -replace '"', '').ToLower() }
+          } | Sort-Object -Unique
+          echo "DEFAULTLIBs: $($defaultlibs -join ' ')"
+          if ($defaultlibs -match 'volatileaccess') { throw "a library asks for volatileaccessu.lib: built against a too-new Windows SDK" }
           Get-ChildItem -Recurse "$installed\lib\*.lib" | ForEach-Object { echo $_.FullName }
 
       # -- Package into tarball --
@@ -173,6 +200,7 @@ jobs:
           vcpkg_commit=${{ steps.versions.outputs.VCPKG_COMMIT }}
           vcpkg_triplet=$env:TRIPLET
           msvc=$msvc
+          windows_sdk=10.0.22621.0
           built_on=$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
           runner_image=${{ runner.os }}-${{ runner.arch }}
           "@ | Out-File -Encoding utf8 "$staging\MANIFEST.txt"
@@ -207,7 +235,7 @@ jobs:
 
           - **Tesseract version:** $version
           - **vcpkg commit:** ``${{ steps.versions.outputs.VCPKG_COMMIT }}``
-          - **Toolset:** VS 2022 (MSVC 14.44, runner ``windows-2022``). Link with the same or a newer MSVC.
+          - **Toolset:** VS 2022 (MSVC 14.44, runner ``windows-2022``), Windows SDK 10.0.22621. Link with the same or a newer MSVC and SDK.
           - Each asset's ``MANIFEST.txt`` has its build date.
 
           ## Usage in CI

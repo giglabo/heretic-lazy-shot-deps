@@ -45,3 +45,4 @@ gh release list --repo giglabo/heretic-lazy-shot-deps
 - Consumer repo (`heretic-lazy-shot`) references release tags in its CI workflow -- coordinate updates
 - This repo is **public** so the consumer CI can download release assets with the default `GITHUB_TOKEN` (no extra PAT or secret needed)
 - The build job runs on `windows-2022` (MSVC 14.44) on purpose: static libs only link with the same or a newer MSVC, and `windows-latest` (VS 2026, 14.51) produced libs that VS 2022 cannot link (`volatileaccessu.lib`). Do not move it to `windows-latest`.
+- The Windows SDK is pinned to 10.0.22621 (step "Pin the Windows SDK"): libs built against SDK 10.0.26100 ask for `volatileaccessu.lib` (libcurl), which consumers on SDK 22621 cannot link. Raise the pin only together with the consumers' SDK.

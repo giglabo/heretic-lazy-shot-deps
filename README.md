@@ -37,7 +37,7 @@ Both triplets produce **static** libraries (`.lib` archives). They differ in the
 
 Never mix them: the linker refuses `/MT` and `/MD` C++ objects in one binary (`LNK2038 RuntimeLibrary mismatch`).
 
-**Toolset.** The workflow runs on `windows-2022` (VS 2022, MSVC 14.44), not `windows-latest`. Static libraries link only with the same or a newer `link.exe`; libs from `windows-latest` (VS 2026, MSVC 14.51) fail on VS 2022 with `LNK1104: cannot open file 'volatileaccessu.lib'`. Build with the oldest toolset any consumer uses (heretic-lazy-shot's win10-2: VS 2022 17.14). `MANIFEST.txt` records the `msvc` version.
+**Toolset.** The workflow runs on `windows-2022` (VS 2022, MSVC 14.44), not `windows-latest`. Static libraries link only with the same or a newer `link.exe`; libs from `windows-latest` (VS 2026, MSVC 14.51) fail on VS 2022 with `LNK1104: cannot open file 'volatileaccessu.lib'`. Build with the oldest toolset any consumer uses (heretic-lazy-shot's win10-2: VS 2022 17.14). The Windows SDK is pinned to 10.0.22621 the same way (newer SDKs are moved aside before vcpkg runs): SDK 10.0.26100 headers make libcurl ask for `volatileaccessu.lib`, which older SDKs lack (`LNK1104`). The workflow fails if any library asks for it. `MANIFEST.txt` records `msvc` and `windows_sdk`.
 
 ### Tarball Contents
 
